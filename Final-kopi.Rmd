@@ -1,0 +1,277 @@
+---
+title: "CDS - Final Project"
+author: "By Rasmus Svendsen, Joe Duckhouse, Kristian Kring & Christian Kolding"
+date: "01/13/2022"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Get the necessary packages
+First, start with installing the relevant packages.
+
+```{r libraries,echo=FALSE}
+library(ggiraph)
+library(patchwork)
+library(ggpubr)
+library(tidyquant)
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(gganimate)
+library(gifski)
+library(av)
+library(lubridate)
+library(ggplot2)
+library(readxl)
+```
+
+Here we read in the data set and put it in a data frame.
+
+```{r}
+df <- read_csv("Africa_19_20.csv")
+df2 <- read_xls("Scrape-Africa.xls")
+```
+
+There are some irrelevant columns that we want to remove. Then we save the cleaned data in a new data frame. By doing this we are not tampering with the original data for transparency. 
+```{r}
+clean <- c("iso", "iso3", "event_id_no_city", "event_id_no_cnty", "event_id_cnty", "time_precision", "inter1", "inter2", "interaction", "geo_precision")
+
+cleandata <- df[,!(names(df) %in% clean)]
+```
+
+We want to have the date in our data frame listed as a date:
+```{r}
+cleandata <- cleandata %>% 
+  mutate(event_date = dmy(event_date))
+```
+
+We don't want to include the year 2018:
+```{r}
+cleandata <- cleandata %>%
+  filter(year > 2018)
+```
+
+Now that the data is clean, we can start using it. Firstly, we want to get an overview of the events in Africa, we want to make an interactive map showing the events geographically.
+
+Here we install the neccesary package "leaflet".
+```{r world map install}
+#install.packages("leaflet")
+library(leaflet)
+```
+
+Here we specify which parameters to include when clicking in a specific event.
+```{r world map content}
+cleandata %>% 
+mutate(content = paste0('<b>Event type:</b> ', event_type, '<br>', '<b>Fatalities: </b>', fatalities, '<br>', '<b>Event date:</b> ', event_type, '<br>', '<b>Country:</b> ', country, '<br>')) -> cleandata
+```
+
+Here we specify how the map will take the latitude and longitude of the data set and make clusters if the events are close to each other, depending on how much you zoom in/out.
+```{r world map}
+cleandata %>% 
+  leaflet() %>%
+  addTiles() %>%
+  addMarkers(~longitude, ~latitude, label = ~event_type, popup = ~content, clusterOptions = markerClusterOptions()) 
+cleandata
+```
+
+Here we want to know the number of events through the period. Therefore, we create a new data frame where we take the sum of events per day. Again, the date must be coerced and the count column values had to be coerced to numeric.
+```{r,results='hide'}
+countingafrica <- table(cleandata$event_date)
+datecount <- setNames(data.frame(table(cleandata$event_date)),c("date", "count"))
+
+datecount <- datecount %>% 
+  mutate(date = ymd(date))
+
+as.numeric(datecount$count)
+```
+
+Now that we have made this data frame, we can make a plot using ggplot2. The blue line indicates the mean, taken from 60 days intervals.
+```{r}
+# Plot
+datecount %>%
+  ggplot(aes(x=date, y=count)) +
+    geom_line() +
+    ggtitle("Conflicts in Africa 2019-2021") +
+    ylab("Events") +
+    scale_x_date(date_breaks = "6 months",
+                 date_labels = ("%b %y")) +
+  geom_ma(ma_fun = SMA, n = 60, color = "blue", size = 1)
+```
+
+Here we make a data frame listing the total number of events per country.
+```{r}
+countingcountry <- table(cleandata$country)
+countofcountry <- setNames(data.frame(table(cleandata$country)),c("Country","Count"))
+```
+
+Here we make a data frame listing the total number of fatalities per country and renaming the column.
+```{r}
+fata <- aggregate(fatalities~country,cleandata,sum)
+names(fata)[2] <- "Fatalities"
+```
+
+Here we combine the above two data frames to "countrydata" and creates an additional two columns which we bind to countrydata.
+```{r}
+# Combine the above two data frames
+countrydata <- cbind(countofcountry, fata$Fatalities, df2$`gdp-per-capita`, df2$`political-stability-index`, df2$`hdi-value`)
+
+# Renaming the columns
+names(countrydata)[names(countrydata) == 'fata$Fatalities'] <- 'fatalities'
+names(countrydata)[names(countrydata) == 'df2$`gdp-per-capita`'] <- 'GDP-per-capita'
+names(countrydata)[names(countrydata) == 'df2$`political-stability-index`'] <- 'political_stability_index'
+names(countrydata)[names(countrydata) == 'df2$`hdi-value`'] <- 'HDI-value'
+names(countrydata)[names(countrydata) == 'Count'] <- 'number_of_events'
+
+countrydata[is.na(countrydata)] <- 0
+
+population <- c(43851044, 32866272, 12123200, 2351627, 20903273, 11890784, 26545863, 555987, 4829767, 16425864, 869601, 89561403, 988000, 102334404, 1402985, 3546421, 1160164, 114963588, 2225734, 2416668, 31072940, 13132795, 1968001, 26378274, 53771296, 2142249, 5057681, 6871292, 27691018, 19129952, 20250833, 4649658, 1271768, 272815, 36910560, 31255435, 2540905, 24206644, 206139589, 5518087, 895312, 12952218, 6077, 219159, 16743927, 98347, 7976983, 15893222, 59308690, 11193725, 43849260, 59734218, 8278724, 11818619, 45741007, 18383955, 14862924)
+
+countrydata <- cbind(countrydata, population)
+
+countrydata$event_index <- with(countrydata, number_of_events / population)
+
+countrydata$fatalities_index <- with(countrydata, fatalities / number_of_events)
+
+countrydata$political_stability_index <- as.numeric(countrydata$political_stability_index)
+
+countrydata$`HDI-value` <- as.numeric(countrydata$`HDI-value`)
+```
+
+```{r fig.width=8, fig.height=8}
+# Plot for events per country
+plotevents <- countrydata %>%
+  ggplot(aes(x=number_of_events, y=reorder(Country, number_of_events))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Number of events per country in 2019-2021 - Africa") +
+  xlab("Number of events")
+```
+
+```{r fig.width=8, fig.height=8}
+# Plot for fatalities per country
+plotfata <- countrydata %>%
+  ggplot(aes(x=fatalities, y=reorder(Country, fatalities))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Number of fatalities per country in 2019-2021 - Africa") +
+  xlab("Number of fatalities")
+```
+
+```{r fig.width=12, fig.height=8}
+eventsfata <- ggarrange(plotevents, plotfata + rremove("x.text"),
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1)
+```
+
+```{r fig.width=8, fig.height=8}
+# Plot for fatalities_index per country
+countrydata %>%
+  ggplot(aes(x=fatalities_index, y=reorder(Country, fatalities_index))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Fatalities index per country in 2019-2021 - Africa") +
+  xlab("Fatalities index")
+```
+
+```{r fig.width=8, fig.height=8,fig.show='hide'}
+# Plot for events per country
+plotevents <- countrydata %>%
+  ggplot(aes(x=number_of_events, y= Country)) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Events per country in 2019-2021 - Africa") +
+  xlab("Number of events")
+```
+
+```{r fig.width=8, fig.height=8,fig.show='hide'}
+# Plot for population per country
+plotpop <- countrydata %>%
+  ggplot(aes(x=population, y= Country)) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Population per country in 2019-2021 - Africa") +
+  xlab("Population")
+```
+
+```{r fig.width=12, fig.height=8}
+ggarrange(plotevents, plotpop + rremove("x.text"), 
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1)
+```
+
+```{r fig.width=8, fig.height=8,fig.show='hide'}
+# Plot for GDP per country
+plot1 <- countrydata %>%
+  ggplot(aes(x=`GDP-per-capita`, y=reorder(Country, -`GDP-per-capita`, y = `GDP-per-capita`))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("GDP per capita per country in 2019-2021 - Africa") +
+  xlab("GDP per capita")
+```
+
+```{r fig.width=8, fig.height=8,fig.show='hide'}
+# Plot for political stability per country
+plot2 <- countrydata %>%
+  ggplot(aes(x=political_stability_index, y=reorder(Country, -political_stability_index, y = political_stability_index))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Political stability per country in 2019-2021 - Africa") +
+  xlab("Political stability index")
+```
+
+```{r fig.width=8, fig.height=8,fig.show='hide'}
+# Plot for HDI value per country
+plot3 <- countrydata %>%
+  ggplot(aes(x=`HDI-value`, y=reorder(Country, -`HDI-value`, y = `HDI-value`))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("HDI value per country in 2019-2021 - Africa") +
+  xlab("HDI value")
+```
+
+```{r fig.width=8, fig.height=8,fig.show='hide'}
+# Plot for events per country
+plot4 <- countrydata %>%
+  ggplot(aes(x=number_of_events, y=reorder(Country, number_of_events))) +
+    geom_bar(stat = "identity") +
+  ylab("Country") +
+    ggtitle("Events per country in 2019-2021 - Africa") +
+  xlab("Events")
+```
+
+Here we combine the 4 plots above for better comparison.
+```{r fig.width=12, fig.height=15}
+fourgraphs <- ggarrange(plot1, plot2, plot3, plot4 + rremove("x.text"),
+          labels = c("A", "B", "C", "D"),
+          ncol = 2, nrow = 2)
+annotate_figure(fourgraphs, top = text_grob("Figure 1", face = "bold", size = 25))
+```
+
+From the plots above we can see that Tunisias event index is high despite having a high HDI value and GDP per capita. This can be interpreted as out of the norm which is why we want to take a closer at Tunisia. Therefore we create a data frame for Tunisia showing events per day.
+```{r,results='hide'}
+tunisia <- filter(cleandata, country == "Tunisia")
+
+countingtunisia <- table(tunisia$event_date)
+datecounttunisia <- setNames(data.frame(table(tunisia$event_date)),c("date", "count"))
+
+datecounttunisia <- datecounttunisia %>% 
+  mutate(date = ymd(date))
+
+as.numeric(datecounttunisia$count)
+```
+
+Now that we have made this data frame, we can make a plot using ggplot2. The blue line indicates the mean, taken from 60 days intervals.
+```{r}
+# Plot
+datecounttunisia %>%
+  ggplot(aes(x=date, y=count)) +
+    geom_line() +
+    ggtitle("Conflicts in Tunisia 2019-2021") +
+    ylab("Events") +
+    scale_x_date(date_breaks = "6 months",
+                 date_labels = ("%b %y")) +
+  geom_ma(ma_fun = SMA, n = 60, color = "blue", size = 1)
+```
